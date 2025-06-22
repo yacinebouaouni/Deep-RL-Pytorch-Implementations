@@ -22,7 +22,7 @@ class PPOAgent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.cov_var = torch.full(
-            (self.action_dim,), 0.5
+            (self.action_dim,), self.cov_var_value
         )  # Standard deviation for actions
         self.cov_mat = torch.diag(self.cov_var).to(
             self.device
@@ -49,7 +49,7 @@ class PPOAgent:
         self.n_epochs = 10  # Number of epochs for each update
         self.clip_ratio = 0.2  # Clipping ratio for PPO
         self.lr = 2e-3  # Learning rate for the optimizer
-        self.seed = 42
+        self.cov_var_value = 0.5  # Standard deviation for the action distribution
 
     def _select_action(self, obs: torch.Tensor) -> tuple[np.ndarray, float]:
         """Select an action based on the current observation using the actor network.
