@@ -46,9 +46,9 @@ class PPOAgent:
         self.timesteps_per_batch = 4096  # Batch size for each update
         self.max_timesteps_per_episode = 256  # Maximum timesteps per episode
         self.discount_factor = 0.99  # Discount factor for rewards
-        self.n_epochs = 10  # Number of epochs for each update
+        self.n_epochs = 20  # Number of epochs for each update
         self.clip_ratio = 0.2  # Clipping ratio for PPO
-        self.lr = 2e-3  # Learning rate for the optimizer
+        self.lr = 2e-4  # Learning rate for the optimizer
         self.cov_var_value = 0.5  # Standard deviation for the action distribution
 
     def _select_action(self, obs: torch.Tensor) -> tuple[np.ndarray, float]:
