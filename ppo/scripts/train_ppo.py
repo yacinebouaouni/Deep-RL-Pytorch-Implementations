@@ -16,7 +16,7 @@ def train_agent(env_name="MountainCarContinuous-v0", total_timesteps=200000, hyp
 
 
 def record_video(
-    agent, env_name="MountainCarContinuous-v0", video_folder="ppo_videos", seed=42
+    agent, env_name="MountainCarContinuous-v0", video_folder="ppo_logs_videos", seed=42
 ):
     env = gymnasium.make(env_name, render_mode="rgb_array")
     env = gymnasium.wrappers.RecordVideo(
