@@ -8,48 +8,46 @@ from torch.distributions import MultivariateNormal
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
+from ppo.config import PPOHyperparameters
 from ppo.network import FeedForwardNetwork
 
 
 class PPOAgent:
     """Implementation of Proximal Policy Optimization (PPO) algorithm."""
 
-    def __init__(self, env, log_dir: str = "ppo_logs"):
+    def __init__(self, env, log_dir: str = "ppo_logs", hyperparams: PPOHyperparameters = PPOHyperparameters()):
         self.env = env
         self.obs_dim = self.env.observation_space.shape[0]
         self.action_dim = self.env.action_space.shape[0]
-        self._init_hyperparameters()
+        self.hyperparams = hyperparams
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.cov_var = torch.full(
-            (self.action_dim,), self.cov_var_value
-        )  # Standard deviation for actions
-        self.cov_mat = torch.diag(self.cov_var).to(
-            self.device
-        )  # Covariance matrix for actions
+        # Assign hyperparameters from dataclass
+        self.timesteps_per_batch = self.hyperparams.timesteps_per_batch
+        self.max_timesteps_per_episode = self.hyperparams.max_timesteps_per_episode
+        self.discount_factor = self.hyperparams.discount_factor
+        self.n_epochs = self.hyperparams.n_epochs
+        self.clip_ratio = self.hyperparams.clip_ratio
+        self.lr = self.hyperparams.lr
+
+        # Learnable log standard deviation for actions
+        self.log_std = torch.nn.Parameter(torch.full((self.action_dim,), -0.5))  # std ≈ 0.6
 
         # step 1: Initialize actor (policy) and critic (value) networks
-        self.actor = FeedForwardNetwork(self.obs_dim, self.action_dim, 128).to(
+        self.actor = FeedForwardNetwork(self.obs_dim, self.action_dim, 64).to(
             self.device
         )
         self.critic = FeedForwardNetwork(self.obs_dim, 1, 64).to(self.device)
 
-        # define optimizer for both actor and critic networks
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
+        # define optimizer for both actor and critic networks (include log_std)
+        self.actor_optimizer = torch.optim.Adam(
+            list(self.actor.parameters()) + [self.log_std], lr=self.lr
+        )
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
 
         # Initialize TensorBoard writer for logging
         run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
-
-    def _init_hyperparameters(self):
-        self.timesteps_per_batch = 4096  # Batch size for each update
-        self.max_timesteps_per_episode = 256  # Maximum timesteps per episode
-        self.discount_factor = 0.99  # Discount factor for rewards
-        self.n_epochs = 20  # Number of epochs for each update
-        self.clip_ratio = 0.2  # Clipping ratio for PPO
-        self.lr = 2e-4  # Learning rate for the optimizer
-        self.cov_var_value = 0.5  # Standard deviation for the action distribution
 
     def _select_action(self, obs: torch.Tensor) -> tuple[np.ndarray, float]:
         """Select an action based on the current observation using the actor network.
@@ -58,7 +56,9 @@ class PPOAgent:
         The log probability of the action is also computed for later use in policy updates.
         """
         mean = self.actor(obs)
-        distribution = MultivariateNormal(mean, self.cov_mat)
+        std = torch.exp(self.log_std)
+        cov_mat = torch.diag(std**2).to(self.device)
+        distribution = MultivariateNormal(mean, cov_mat)
         action = distribution.sample()  # Sample an action from the distribution
         log_prob = distribution.log_prob(
             action
@@ -83,7 +83,9 @@ class PPOAgent:
         The log probability is computed using the actor network and the covariance matrix.
         """
         mean = self.actor(obs)
-        distribution = MultivariateNormal(mean, self.cov_mat)
+        std = torch.exp(self.log_std)
+        cov_mat = torch.diag(std**2).to(self.device)
+        distribution = MultivariateNormal(mean, cov_mat)
         return distribution.log_prob(action)
 
     def _compute_rewards_to_go(self, batch_rewards: list[list[float]]) -> list[float]:

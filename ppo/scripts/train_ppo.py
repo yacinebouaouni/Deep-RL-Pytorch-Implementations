@@ -2,11 +2,15 @@ import argparse
 import gymnasium
 import torch
 from ppo.agent import PPOAgent
+from ppo.config import PPOHyperparameters
 
 
-def train_agent(env_name="MountainCarContinuous-v0", total_timesteps=200000):
+def train_agent(env_name="MountainCarContinuous-v0", total_timesteps=200000, hyperparams=None):
     env = gymnasium.make(env_name)
-    agent = PPOAgent(env)
+    if hyperparams is None:
+        agent = PPOAgent(env)
+    else:
+        agent = PPOAgent(env, hyperparams=hyperparams)
     agent.learn(total_timesteps=total_timesteps)
     return agent
 
@@ -50,9 +54,59 @@ def main():
         default=200000,
         help="Total timesteps for training",
     )
+    parser.add_argument(
+        "--timesteps_per_batch",
+        type=int,
+        default=4096,
+        help="Batch size for each update",
+    )
+    parser.add_argument(
+        "--max_timesteps_per_episode",
+        type=int,
+        default=256,
+        help="Maximum timesteps per episode",
+    )
+    parser.add_argument(
+        "--discount_factor",
+        type=float,
+        default=0.99,
+        help="Discount factor for rewards",
+    )
+    parser.add_argument(
+        "--n_epochs",
+        type=int,
+        default=10,
+        help="Number of epochs for each update",
+    )
+    parser.add_argument(
+        "--clip_ratio",
+        type=float,
+        default=0.2,
+        help="Clipping ratio for PPO",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=5e-4,
+        help="Learning rate for the optimizer",
+    )
+
     args = parser.parse_args()
 
-    agent = train_agent(env_name=args.env_name, total_timesteps=args.total_timesteps)
+    hyperparams = PPOHyperparameters(
+        timesteps_per_batch=args.timesteps_per_batch,
+        max_timesteps_per_episode=args.max_timesteps_per_episode,
+        discount_factor=args.discount_factor,
+        n_epochs=args.n_epochs,
+        clip_ratio=args.clip_ratio,
+        lr=args.lr,
+    )
+
+    agent = train_agent(
+        env_name=args.env_name,
+        total_timesteps=args.total_timesteps,
+        hyperparams=hyperparams,
+    )
     record_video(agent, env_name=args.env_name)
 
 
