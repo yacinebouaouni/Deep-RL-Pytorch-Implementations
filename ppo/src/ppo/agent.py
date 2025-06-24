@@ -216,6 +216,7 @@ class PPOAgent:
                         torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio)
                         * batch_advantages_k
                     )
+                    # Calculate the actor loss using the surrogate loss terms and entropy bonus
                     actor_loss = -torch.min(
                         surrogate_loss_term1, surrogate_loss_term2
                     ).mean()
@@ -223,6 +224,7 @@ class PPOAgent:
                     # update actor network
                     self.actor_optimizer.zero_grad()
                     actor_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
                     self.actor_optimizer.step()
 
                     # calculate critic loss
@@ -231,6 +233,7 @@ class PPOAgent:
                     # update critic network
                     self.critic_optimizer.zero_grad()
                     critic_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)
                     self.critic_optimizer.step()
 
                 current_timestep += sum(batch_lengths)
