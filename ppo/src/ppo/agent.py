@@ -142,7 +142,6 @@ class PPOAgent:
         batch_rewards_to_go = torch.tensor(
             batch_rewards_to_go, dtype=torch.float32, device=self.device
         )
-        print(batch_obs.shape, batch_actions.shape, batch_log_probs.shape)
         return (
             batch_obs,
             batch_actions,
