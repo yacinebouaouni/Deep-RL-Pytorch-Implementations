@@ -29,6 +29,8 @@ class PPOAgent:
         self.n_epochs = self.hyperparams.n_epochs
         self.clip_ratio = self.hyperparams.clip_ratio
         self.lr = self.hyperparams.lr
+        self.coeff_loss_vf = self.hyperparams.coeff_loss_vf
+        self.coeff_loss_entropy = self.hyperparams.coeff_loss_entropy
 
         # Learnable log standard deviation for actions
         self.log_std = torch.nn.Parameter(torch.full((self.action_dim,), -0.5))  # std ≈ 0.6
@@ -156,7 +158,7 @@ class PPOAgent:
             batch_rewards.append(episode_rewards)
 
         # convert collected data to tensors
-        batch_obs = torch.tensor(batch_obs, dtype=torch.float32, device=self.device)
+        batch_obs = torch.tensor(np.array(batch_obs), dtype=torch.float32, device=self.device)
         batch_actions = torch.tensor(
             batch_actions, dtype=torch.float32, device=self.device
         )
@@ -216,24 +218,32 @@ class PPOAgent:
                         torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio)
                         * batch_advantages_k
                     )
-                    # Calculate the actor loss using the surrogate loss terms and entropy bonus
+                    # Actor loss (policy loss)
                     actor_loss = -torch.min(
                         surrogate_loss_term1, surrogate_loss_term2
                     ).mean()
 
-                    # update actor network
-                    self.actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
-                    self.actor_optimizer.step()
-
-                    # calculate critic loss
+                    # Critic loss (value function loss)
                     batch_values = self._evaluate(batch_obs)
                     critic_loss = F.mse_loss(batch_values, batch_rewards_to_go)
-                    # update critic network
+
+                    # Reconstruct distribution to compute entropy
+                    mean = self.actor(batch_obs)
+                    std = torch.exp(self.log_std)
+                    cov_mat = torch.diag(std**2).to(self.device)
+                    distribution = MultivariateNormal(mean, cov_mat)
+                    entropy = distribution.entropy().mean()
+                    
+                    # Combine losses (weighted sum)
+                    total_loss = actor_loss + self.coeff_loss_vf * critic_loss - self.coeff_loss_entropy * entropy
+
+                    # Single optimizer step for both actor and critic
+                    self.actor_optimizer.zero_grad()
                     self.critic_optimizer.zero_grad()
-                    critic_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=5)
+                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=5)
+                    self.actor_optimizer.step()
                     self.critic_optimizer.step()
 
                 current_timestep += sum(batch_lengths)
@@ -252,4 +262,24 @@ class PPOAgent:
                 self.writer.add_scalar(
                     "Rewards/Std", batch_rewards_to_go.std().item(), current_timestep
                 )
+                
+        # write final model parameters to TensorBoard
+        self.writer.add_hparams(
+            {
+                "timesteps_per_batch": self.timesteps_per_batch,
+                "max_timesteps_per_episode": self.max_timesteps_per_episode,
+                "discount_factor": self.discount_factor,
+                "n_epochs": self.n_epochs,
+                "clip_ratio": self.clip_ratio,
+                "lr": self.lr,
+                "coeff_loss_vf": self.coeff_loss_vf,
+                "coeff_loss_entropy": self.coeff_loss_entropy,
+            },
+            {
+                "Loss/Actor": actor_loss.item(),
+                "Loss/Critic": critic_loss.item(),
+                "Rewards/Mean": batch_rewards_to_go.mean().item(),
+                "Rewards/Std": batch_rewards_to_go.std().item(),
+            },
+        )
         self.writer.close()

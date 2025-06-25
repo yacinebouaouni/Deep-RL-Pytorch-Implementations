@@ -90,6 +90,18 @@ def main():
         default=5e-4,
         help="Learning rate for the optimizer",
     )
+    parser.add_argument(
+        "--coeff_loss_vf",
+        type=float,
+        default=0.5,
+        help="Coefficient for value function loss"
+    )
+    parser.add_argument(
+        "--coeff_loss_entropy",
+        type=float,
+        default=0.01,
+        help="Coefficient for entropy loss"
+    )
 
     args = parser.parse_args()
 
