@@ -101,6 +101,7 @@ class PPOAgent:
                 not terminated
                 and not truncated
                 and episode_length < self.max_timesteps_per_episode
+                and timestep < self.timesteps_per_batch
             ):
                 # collect observation
                 batch_obs.append(obs)
@@ -141,7 +142,7 @@ class PPOAgent:
         batch_rewards_to_go = torch.tensor(
             batch_rewards_to_go, dtype=torch.float32, device=self.device
         )
-
+        print(batch_obs.shape, batch_actions.shape, batch_log_probs.shape)
         return (
             batch_obs,
             batch_actions,
