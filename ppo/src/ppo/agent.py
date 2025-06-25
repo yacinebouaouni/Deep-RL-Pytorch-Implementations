@@ -9,13 +9,19 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
 from ppo.config import PPOHyperparameters
-from ppo.network import FeedForwardNetwork
+from ppo.network import ActorCriticModel
+from torch.distributions import Normal, TransformedDistribution, TanhTransform
 
 
 class PPOAgent:
     """Implementation of Proximal Policy Optimization (PPO) algorithm."""
 
-    def __init__(self, env, log_dir: str = "ppo_logs", hyperparams: PPOHyperparameters = PPOHyperparameters()):
+    def __init__(
+        self,
+        env,
+        log_dir: str = "ppo_logs",
+        hyperparams: PPOHyperparameters = PPOHyperparameters(),
+    ):
         self.env = env
         self.obs_dim = self.env.observation_space.shape[0]
         self.action_dim = self.env.action_space.shape[0]
@@ -32,63 +38,24 @@ class PPOAgent:
         self.coeff_loss_vf = self.hyperparams.coeff_loss_vf
         self.coeff_loss_entropy = self.hyperparams.coeff_loss_entropy
 
-        # Learnable log standard deviation for actions
-        self.log_std = torch.nn.Parameter(torch.full((self.action_dim,), -0.5))  # std ≈ 0.6
-
         # step 1: Initialize actor (policy) and critic (value) networks
-        self.actor = FeedForwardNetwork(self.obs_dim, self.action_dim, 64).to(
-            self.device
+        self.actor_critic = ActorCriticModel(
+            obs_dim=self.obs_dim,
+            action_dim=self.action_dim,
+            hidden_dim=64,
+            device=self.device,
         )
-        self.critic = FeedForwardNetwork(self.obs_dim, 1, 64).to(self.device)
 
         # define optimizer for both actor and critic networks (include log_std)
-        self.actor_optimizer = torch.optim.Adam(
-            list(self.actor.parameters()) + [self.log_std], lr=self.lr
+        self.optimizer = torch.optim.Adam(
+            list(self.actor_critic.parameters()),
+            lr=self.lr,
+            eps=1e-5,
         )
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
 
         # Initialize TensorBoard writer for logging
         run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
-
-    def _select_action(self, obs: torch.Tensor) -> tuple[np.ndarray, float]:
-        """Select an action based on the current observation using the actor network.
-
-        The action is sampled from a Gaussian distribution parameterized by the actor network.
-        The log probability of the action is also computed for later use in policy updates.
-        """
-        mean = self.actor(obs)
-        std = torch.exp(self.log_std)
-        cov_mat = torch.diag(std**2).to(self.device)
-        distribution = MultivariateNormal(mean, cov_mat)
-        action = distribution.sample()  # Sample an action from the distribution
-        log_prob = distribution.log_prob(
-            action
-        )  # Compute the log probability of the action
-        return (
-            action.detach().cpu().numpy(),
-            log_prob.detach().item(),
-        )  # Return action as numpy array and log probability
-
-    def _evaluate(self, obs: torch.Tensor) -> torch.Tensor:
-        """Evaluate the value of the current observation using the critic network.
-
-        The critic network outputs a value estimate for the given observation.
-        This value will be used to compute advantages and update the policy.
-        """
-        return self.critic(obs).squeeze()
-
-    def _evaluate_action(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """Evaluate the log probability of a given action under the current policy.
-
-        This is used to compute the ratio of probabilities for the PPO objective.
-        The log probability is computed using the actor network and the covariance matrix.
-        """
-        mean = self.actor(obs)
-        std = torch.exp(self.log_std)
-        cov_mat = torch.diag(std**2).to(self.device)
-        distribution = MultivariateNormal(mean, cov_mat)
-        return distribution.log_prob(action)
 
     def _compute_rewards_to_go(self, batch_rewards: list[list[float]]) -> list[float]:
         """Compute the returns (rewards-to-go) for each episode.
@@ -138,10 +105,11 @@ class PPOAgent:
                 # collect observation
                 batch_obs.append(obs)
 
-                # select action using the actor network
-                action, log_prob = self._select_action(
-                    torch.tensor(obs, dtype=torch.float32, device=self.device)
-                )
+                # select action using the actor network (no grad needed)
+                with torch.no_grad():
+                    action, log_prob = self.actor_critic.get_action(
+                        torch.tensor(obs, dtype=torch.float32, device=self.device)
+                    )
                 batch_actions.append(action)
                 batch_log_probs.append(log_prob)
 
@@ -158,9 +126,11 @@ class PPOAgent:
             batch_rewards.append(episode_rewards)
 
         # convert collected data to tensors
-        batch_obs = torch.tensor(np.array(batch_obs), dtype=torch.float32, device=self.device)
+        batch_obs = torch.tensor(
+            np.array(batch_obs), dtype=torch.float32, device=self.device
+        )
         batch_actions = torch.tensor(
-            batch_actions, dtype=torch.float32, device=self.device
+            np.array(batch_actions), dtype=torch.float32, device=self.device
         )
         batch_log_probs = torch.tensor(
             batch_log_probs, dtype=torch.float32, device=self.device
@@ -193,11 +163,14 @@ class PPOAgent:
                     batch_lengths,
                 ) = self.rollout()
 
-                # calculate Value estimates for the batch observations
-                batch_values = self._evaluate(batch_obs.to(self.device))
+                # calculate Value estimates for the batch observations (no grad needed)
+                with torch.no_grad():
+                    batch_values = self.actor_critic.get_value(
+                        batch_obs.to(self.device)
+                    ).detach()
 
                 # step 5: compute advantages
-                batch_advantages_k = batch_rewards_to_go - batch_values.detach()
+                batch_advantages_k = batch_rewards_to_go - batch_values
 
                 # Normalize advantages
                 # This helps stabilize training by ensuring that the advantages have a mean of 0 and a
@@ -207,7 +180,7 @@ class PPOAgent:
 
                 # step 6: update actor and critic networks
                 for epoch in range(self.n_epochs):
-                    batch_log_probs = self._evaluate_action(
+                    batch_log_probs, entropy = self.actor_critic.get_log_prob_entropy(
                         batch_obs, batch_actions.to(self.device)
                     )
                     ratios = torch.exp(batch_log_probs - batch_log_probs_old)
@@ -224,27 +197,23 @@ class PPOAgent:
                     ).mean()
 
                     # Critic loss (value function loss)
-                    batch_values = self._evaluate(batch_obs)
+                    batch_values = self.actor_critic.get_value(batch_obs)
                     critic_loss = F.mse_loss(batch_values, batch_rewards_to_go)
 
-                    # Reconstruct distribution to compute entropy
-                    mean = self.actor(batch_obs)
-                    std = torch.exp(self.log_std)
-                    cov_mat = torch.diag(std**2).to(self.device)
-                    distribution = MultivariateNormal(mean, cov_mat)
-                    entropy = distribution.entropy().mean()
-                    
                     # Combine losses (weighted sum)
-                    total_loss = actor_loss + self.coeff_loss_vf * critic_loss - self.coeff_loss_entropy * entropy
+                    total_loss = (
+                        actor_loss
+                        + self.coeff_loss_vf * critic_loss
+                        - self.coeff_loss_entropy * entropy.mean()
+                    )
 
                     # Single optimizer step for both actor and critic
-                    self.actor_optimizer.zero_grad()
-                    self.critic_optimizer.zero_grad()
+                    self.optimizer.zero_grad()
                     total_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=5)
-                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=5)
-                    self.actor_optimizer.step()
-                    self.critic_optimizer.step()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.actor_critic.parameters(), max_norm=5
+                    )
+                    self.optimizer.step()
 
                 current_timestep += sum(batch_lengths)
                 pbar.update(sum(batch_lengths))
@@ -262,7 +231,7 @@ class PPOAgent:
                 self.writer.add_scalar(
                     "Rewards/Std", batch_rewards_to_go.std().item(), current_timestep
                 )
-                
+
         # write final model parameters to TensorBoard
         self.writer.add_hparams(
             {

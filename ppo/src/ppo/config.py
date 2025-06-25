@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class PPOHyperparameters:
     timesteps_per_batch: int = 4096  # Batch size for each update
