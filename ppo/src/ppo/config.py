@@ -11,3 +11,4 @@ class PPOHyperparameters:
     lr: float = 5e-4  # Learning rate for the optimizer
     coeff_loss_vf: float = 0.5  # Coefficient for value function loss
     coeff_loss_entropy: float = 0.01  # Coefficient for entropy loss
+    coeff_gae_lambda: float = 0.95  # GAE lambda for advantage estimation

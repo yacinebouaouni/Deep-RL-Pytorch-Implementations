@@ -2,7 +2,13 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Normal
+from torch.distributions import Normal, TransformedDistribution, TanhTransform
+
+
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
 
 
 class ActorCriticModel(nn.Module):
@@ -14,52 +20,49 @@ class ActorCriticModel(nn.Module):
         super().__init__()
         self.device = device
         # Actor network: output activation is tanh
-        # Actor network: output activation is tanh
         self.actor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
             nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh(),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_dim, action_dim), std=0.01),
         ).to(device)
         # Critic network: output activation is None
         self.critic = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         ).to(device)
 
-        # Learnable log standard deviation for actions (std ~ 0.6)
-        self.actor_log_std = torch.nn.Parameter(torch.full((action_dim,), -0.5))
+        # Learnable log standard deviation for actions (std = 1.0)
+        self.actor_log_std = torch.nn.Parameter(torch.zeros(action_dim))
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         """Evaluate the value function for given observations using the critic network."""
         return self.critic(obs).squeeze(-1)
 
-    def get_action(self, obs: torch.Tensor) -> tuple[np.ndarray, float]:
-        """Select an action in [-1, 1] using a Tanh-transformed Normal distribution (supports multi-dimensional actions)."""
+    def get_action(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mean = self.actor(obs)
         std = torch.exp(self.actor_log_std.expand_as(mean)).to(self.device)
-        dist = Normal(mean, std)
-
-        action = dist.rsample()  # rsample for reparameterization
+        base_dist = Normal(mean, std)
+        dist = TransformedDistribution(base_dist, [TanhTransform(cache_size=1)])
+        action = dist.rsample()
         log_prob = dist.log_prob(action).sum(-1)
-
-        action_np = action.detach().cpu().numpy()
-        return action_np, log_prob.detach().item()
+        return action, log_prob
 
     def get_log_prob_entropy(
         self, obs: torch.Tensor, action: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Evaluate the log probability of a given action under the current policy (multi-dimensional support)."""
-        obs = obs.to(self.device)
-        action = action.to(self.device)
         mean = self.actor(obs)
-        std = torch.exp(self.actor_log_std).to(self.device)
-        dist = Normal(mean, std)
+        std = torch.exp(self.actor_log_std.expand_as(mean)).to(self.device)
+        base_dist = Normal(mean, std)
+        dist = TransformedDistribution(base_dist, [TanhTransform(cache_size=1)])
         log_prob = dist.log_prob(action).sum(-1)
-        entropy = dist.entropy().sum(-1)
+        entropy = dist.base_dist.entropy().sum(-1)
         return log_prob, entropy
