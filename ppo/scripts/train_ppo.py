@@ -5,9 +5,7 @@ from ppo.agent import PPOAgent
 from ppo.config import PPOHyperparameters
 
 
-def train_agent(
-    env_name="MountainCarContinuous-v0", total_timesteps=200000, hyperparams=None
-):
+def train_agent(env_name="LunarLander-v3", total_timesteps=200000, hyperparams=None):
     env = gymnasium.make(env_name)
     if hyperparams is None:
         agent = PPOAgent(env)
@@ -18,7 +16,7 @@ def train_agent(
 
 
 def record_video(
-    agent, env_name="MountainCarContinuous-v0", video_folder="ppo_logs_videos", seed=42
+    agent, env_name="LunarLander-v3", video_folder="ppo_logs_videos", seed=42
 ):
     env = gymnasium.make(env_name, render_mode="rgb_array")
     env = gymnasium.wrappers.RecordVideo(
@@ -47,7 +45,7 @@ def main():
     parser.add_argument(
         "--env_name",
         type=str,
-        default="MountainCarContinuous-v0",
+        default="LunarLander-v3",
         help="Gym environment name",
     )
     parser.add_argument(
