@@ -37,11 +37,13 @@ class PPOAgent:
         self.coeff_loss_vf = self.hyperparams.coeff_loss_vf
         self.coeff_loss_entropy = self.hyperparams.coeff_loss_entropy
         self.coeff_gae_lambda = self.hyperparams.coeff_gae_lambda
-        self.initial_lr = self.lr  # For learning rate annealing
         self.minibatch_size = getattr(
             self.hyperparams, "minibatch_size", 64
         )  # Default to 64 if not set
 
+        self.initial_lr = self.lr  # For learning rate annealing
+        self.initial_clip_ratio = self.clip_ratio  # Store initial value for annealing
+        
         # step 1: Initialize actor (policy) and critic (value) networks
         self.actor_critic = ActorCriticDiscreteModel(
             obs_dim=self.obs_dim,
@@ -54,7 +56,6 @@ class PPOAgent:
         self.optimizer = torch.optim.Adam(
             list(self.actor_critic.parameters()),
             lr=self.lr,
-            eps=1e-5,
         )
 
         # Initialize TensorBoard writer for logging
@@ -276,21 +277,17 @@ class PPOAgent:
                 current_timestep += sum(batch_lengths)
                 pbar.update(sum(batch_lengths))
 
-                # Anneal learning rate
+                # Anneal learning rate and clip ratio
                 self._update_lr(current_timestep, total_timesteps)
+                self._update_clip_ratio(current_timestep, total_timesteps)
 
                 # Log the training progress
-                self.writer.add_scalar(
-                    "Loss/Actor", actor_loss.item(), current_timestep
-                )
-                self.writer.add_scalar(
-                    "Loss/Critic", critic_loss.item(), current_timestep
-                )
-                self.writer.add_scalar(
-                    "EpisodeReturn/Mean", episode_final_returns_mean, current_timestep
-                )
-                self.writer.add_scalar(
-                    "EpisodeReturn/Std", episode_final_returns_std, current_timestep
+                self._log_tensorboard(
+                    actor_loss,
+                    critic_loss,
+                    episode_final_returns_mean,
+                    episode_final_returns_std,
+                    current_timestep,
                 )
 
                 print(
@@ -308,3 +305,23 @@ class PPOAgent:
         lr = self.initial_lr * frac
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
+
+    def _update_clip_ratio(self, current_timestep, total_timesteps):
+        """Linearly anneal the clip ratio from initial value to 0.1."""
+        frac = 1.0 - (current_timestep / float(total_timesteps))
+        self.clip_ratio = 0.1 + (self.initial_clip_ratio - 0.1) * frac
+
+    def _log_tensorboard(self, actor_loss, critic_loss, episode_final_returns_mean, episode_final_returns_std, current_timestep):
+        """
+        Log training metrics to TensorBoard.
+        Args:
+            actor_loss (torch.Tensor or float): Actor loss value.
+            critic_loss (torch.Tensor or float): Critic loss value.
+            episode_final_returns_mean (float): Mean of episode returns.
+            episode_final_returns_std (float): Std of episode returns.
+            current_timestep (int): Current timestep in training.
+        """
+        self.writer.add_scalar("Loss/Actor", actor_loss.item() if hasattr(actor_loss, 'item') else actor_loss, current_timestep)
+        self.writer.add_scalar("Loss/Critic", critic_loss.item() if hasattr(critic_loss, 'item') else critic_loss, current_timestep)
+        self.writer.add_scalar("EpisodeReturn/Mean", episode_final_returns_mean, current_timestep)
+        self.writer.add_scalar("EpisodeReturn/Std", episode_final_returns_std, current_timestep)
